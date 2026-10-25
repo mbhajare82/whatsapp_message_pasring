@@ -1,0 +1,170 @@
+{
+  "name": "WhatsApp Chat Categorizer - Dual-Sheet Excel",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "whatsapp-upload",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        200
+      ],
+      "id": "get-upload-page",
+      "name": "Webhook (GET - Form Page)",
+      "webhookId": "whatsapp-upload-get"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <title>WhatsApp Job Categorizer</title>\n  <style>\n    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }\n    .card { background: #fff; padding: 32px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); width: 100%; max-width: 440px; box-sizing: border-box; }\n    h2 { margin: 0 0 8px 0; color: #111b21; font-size: 22px; }\n    p { margin: 0 0 20px 0; color: #667781; font-size: 14px; line-height: 1.4; }\n    label { display: block; font-size: 13px; font-weight: 600; color: #3b4a54; margin-bottom: 6px; }\n    input[type=\"file\"], input[type=\"date\"] { display: block; width: 100%; padding: 10px; border: 1px solid #d1d7db; border-radius: 8px; margin-bottom: 18px; box-sizing: border-box; font-size: 14px; background: #fafafa; }\n    input[type=\"file\"] { padding: 12px; border-style: dashed; background: #fff; cursor: pointer; }\n    button { width: 100%; background: #00a884; color: #fff; border: none; padding: 12px; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.2s; margin-top: 6px; }\n    button:hover { background: #008f6f; }\n  </style>\n</head>\n<body>\n  <div class=\"card\">\n    <h2>WhatsApp Job Categorizer</h2>\n    <p>Upload your <code>whatsappchat.txt</code> to download an Excel sheet with <b>Freshers</b> & <b>Others</b> tabs and extracted metadata.</p>\n    <form method=\"POST\" enctype=\"multipart/form-data\">\n      <label for=\"filter_date\">From Date (Optional):</label>\n      <input type=\"date\" id=\"filter_date\" name=\"filter_date\" />\n      \n      <label for=\"chat_file\">Chat Export (.txt):</label>\n      <input type=\"file\" id=\"chat_file\" name=\"chat_file\" accept=\".txt\" required />\n      \n      <button type=\"submit\">Extract & Download Excel (.xlsx)</button>\n    </form>\n  </div>\n</body>\n</html>",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        200
+      ],
+      "id": "render-form-page",
+      "name": "Render Upload Form"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-upload",
+        "responseMode": "responseNode",
+        "options": {
+          "binaryData": true
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        440
+      ],
+      "id": "post-file-upload",
+      "name": "Webhook (POST - File Receiver)",
+      "webhookId": "whatsapp-upload-post"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst binaryKeys = Object.keys(item.binary || {});\n\nif (binaryKeys.length === 0) {\n  throw new Error('No uploaded file detected. Please upload a .txt file.');\n}\n\n// 1. Read optional filter date (YYYY-MM-DD)\nconst filterDateStr = item.json.body?.filter_date || item.json.filter_date || null;\nlet filterTimestamp = null;\nif (filterDateStr && filterDateStr.trim() !== '') {\n  const [fYear, fMonth, fDay] = filterDateStr.split('-').map(Number);\n  filterTimestamp = new Date(fYear, fMonth - 1, fDay, 0, 0, 0).getTime();\n}\n\n// 2. Decode chat buffer\nconst binaryKey = binaryKeys[0];\nconst buffer = await this.helpers.getBinaryDataBuffer(0, binaryKey);\nconst rawText = buffer.toString('utf-8');\n\n// 3. Date parser\nfunction parseWhatsAppDate(tsStr) {\n  const cleaned = tsStr.replace(/[\\[\\]]/g, '').trim();\n  const datePart = cleaned.split(',')[0].trim();\n  const parts = datePart.split(/[/.-]/).map(p => parseInt(p, 10));\n  if (parts.length < 3 || parts.some(isNaN)) return null;\n  let [day, month, year] = parts;\n  if (year < 100) year += 2000;\n  const parsed = new Date(year, month - 1, day);\n  return isNaN(parsed.getTime()) ? null : parsed;\n}\n\n// 4. Parse WhatsApp lines\nconst lines = rawText.split(/\\r?\\n/);\nconst messageRegex = /^(\\[?[0-9\\/., -]+[APMapm\\d:]*\\]?\\s*(?:-|:)?\\s*)(.*?):\\s*(.*)$/;\n\nconst messages = [];\nlet current = null;\n\nfor (const line of lines) {\n  const match = line.match(messageRegex);\n  if (match) {\n    if (current) messages.push(current);\n    const rawTime = match[1].replace(/[\\[\\]-]/g, '').trim();\n    current = {\n      rawTimestamp: rawTime,\n      dateObj: parseWhatsAppDate(rawTime),\n      sender: match[2].trim(),\n      message: match[3].trim()\n    };\n  } else if (current && line.trim() !== '') {\n    current.message += '\\n' + line.trim();\n  }\n}\nif (current) messages.push(current);\n\n// 5. Filter system notices & date\nconst filtered = messages.filter(m => {\n  if (m.message.includes('Messages and calls are end-to-end encrypted') ||\n      m.message.includes('<Media omitted>') ||\n      m.message.includes('You were added')) {\n    return false;\n  }\n  if (filterTimestamp && m.dateObj) {\n    return m.dateObj.getTime() >= filterTimestamp;\n  }\n  return true;\n});\n\n// 6. Extraction Helpers for Position, Location, Email\nfunction extractEmail(text) {\n  const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/);\n  return emailMatch ? emailMatch[0] : '';\n}\n\nfunction extractLocation(text) {\n  // Pattern 1: Explicit labels like Location: Pune, Work Location - Bangalore, etc.\n  const explicitMatch = text.match(/(?:location|job location|work location|base location|city|workplace)[:\\s-]+([A-Za-z\\s,/]+?)(?:\\r?\\n|$|;|\\.)/i);\n  if (explicitMatch && explicitMatch[1]) {\n    const cleaned = explicitMatch[1].trim();\n    if (cleaned.length < 50) return cleaned;\n  }\n  \n  // Pattern 2: Common Indian & international tech hubs\n  const cities = ['Pune', 'Mumbai', 'Bangalore', 'Bengaluru', 'Hyderabad', 'Chennai', 'Noida', 'Gurgaon', 'Gurugram', 'Delhi', 'Kolkata', 'Ahmedabad', 'Remote', 'Work from Home', 'WFH', 'Hybrid'];\n  for (const city of cities) {\n    const regex = new RegExp(`\\\\b${city}\\\\b`, 'i');\n    if (regex.test(text)) return city;\n  }\n  return 'Not Specified';\n}\n\nfunction extractPosition(text) {\n  // Pattern 1: Explicit labels like Role: ..., Position: ..., Hiring for: ...\n  const explicitMatch = text.match(/(?:role|position|profile|title|designation|hiring for|opening for|requirement for)[:\\s-]+([A-Za-z0-9+#/.\\-\\s]+?)(?:\\r?\\n|$|;|\\.)/i);\n  if (explicitMatch && explicitMatch[1]) {\n    const cleaned = explicitMatch[1].trim();\n    if (cleaned.length < 60) return cleaned;\n  }\n  \n  // Pattern 2: Common developer & tech role keywords\n  const roles = [\n    'Software Engineer', 'Full Stack Developer', 'Frontend Developer', 'Backend Developer',\n    'Java Developer', 'Python Developer', '.NET Developer', 'React Developer', 'Angular Developer',\n    'DevOps Engineer', 'Cloud Architect', 'QA Engineer', 'Automation Tester', 'Data Analyst',\n    'Data Scientist', 'Business Analyst', 'Android Developer', 'iOS Developer', 'Network Engineer',\n    'System Administrator', 'Intern', 'Graduate Engineer Trainee', 'GET'\n  ];\n  for (const role of roles) {\n    const regex = new RegExp(`\\\\b${role}\\\\b`, 'i');\n    if (regex.test(text)) return role;\n  }\n  \n  // Fallback: First meaningful line\n  const firstLine = text.split(/\\r?\\n/)[0].replace(/[*_#]/g, '').trim();\n  return firstLine.length > 50 ? firstLine.substring(0, 47) + '...' : firstLine;\n}\n\n// 7. Freshers keywords\nconst fresherKeywords = [\n  'fresher', 'freshers', 'intern', 'internship', 'interns',\n  '0-1 yr', '0-1 year', '0-1 yrs', '0-2 yr', '0-2 years', '0 - 1', '0 - 2', '0 to 1', '0 to 2',\n  'entry level', 'trainee', 'campus', 'college',\n  'be/btech', 'b.e', 'btech', 'mca', 'bca',\n  'batch 2023', 'batch 2024', 'batch 2025', 'batch 2026',\n  '2024 batch', '2025 batch', '2026 batch', '2025 passout', '2026 passout'\n];\n\nconst freshersRows = [];\nconst othersRows = [];\n\nfor (const msg of filtered) {\n  const lower = msg.message.toLowerCase();\n  const isFresher = fresherKeywords.some(kw => lower.includes(kw));\n  \n  const row = {\n    'Position': extractPosition(msg.message),\n    'Location': extractLocation(msg.message),\n    'Job Description': msg.message,\n    'email': extractEmail(msg.message)\n  };\n  \n  if (isFresher) {\n    freshersRows.push(row);\n  } else {\n    othersRows.push(row);\n  }\n}\n\nreturn [\n  {\n    json: {\n      freshers: freshersRows,\n      others: othersRows,\n      freshers_count: freshersRows.length,\n      others_count: othersRows.length\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        440
+      ],
+      "id": "parse-extract-code",
+      "name": "Parse & Extract Fields"
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputData = $input.first().json;\nconst freshers = inputData.freshers || [];\nconst others = inputData.others || [];\n\n// Fallback row if a category is empty\nconst emptyRow = { 'Position': 'None', 'Location': 'None', 'Job Description': 'No records found', 'email': 'None' };\nconst freshersList = freshers.length > 0 ? freshers : [emptyRow];\nconst othersList = others.length > 0 ? others : [emptyRow];\n\nfunction escapeXml(unsafe) {\n  if (unsafe === null || unsafe === undefined) return '';\n  return String(unsafe)\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&apos;');\n}\n\nfunction colName(index) {\n  return ['A', 'B', 'C', 'D'][index];\n}\n\nfunction generateSheetXml(data) {\n  const headers = ['Position', 'Location', 'Job Description', 'email'];\n  let sheetXml = '<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\\n';\n  sheetXml += '<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\\n';\n  sheetXml += '  <cols>\\n';\n  sheetXml += '    <col min=\"1\" max=\"1\" width=\"28\" customWidth=\"1\"/>\\n';\n  sheetXml += '    <col min=\"2\" max=\"2\" width=\"18\" customWidth=\"1\"/>\\n';\n  sheetXml += '    <col min=\"3\" max=\"3\" width=\"65\" customWidth=\"1\"/>\\n';\n  sheetXml += '    <col min=\"4\" max=\"4\" width=\"28\" customWidth=\"1\"/>\\n';\n  sheetXml += '  </cols>\\n';\n  sheetXml += '  <sheetData>\\n';\n\n  // Header Row (row 1)\n  sheetXml += '    <row r=\"1\">\\n';\n  headers.forEach((h, colIdx) => {\n    sheetXml += `      <c r=\"${colName(colIdx)}1\" t=\"inlineStr\"><is><t>${escapeXml(h)}</t></is></c>\\n`;\n  });\n  sheetXml += '    </row>\\n';\n\n  // Data Rows\n  data.forEach((row, rowIdx) => {\n    const rNum = rowIdx + 2;\n    sheetXml += `    <row r=\"${rNum}\">\\n`;\n    headers.forEach((h, colIdx) => {\n      const val = row[h] !== undefined ? row[h] : '';\n      sheetXml += `      <c r=\"${colName(colIdx)}${rNum}\" t=\"inlineStr\"><is><t>${escapeXml(val)}</t></is></c>\\n`;\n    });\n    sheetXml += '    </row>\\n';\n  });\n\n  sheetXml += '  </sheetData>\\n';\n  sheetXml += '</worksheet>';\n  return sheetXml;\n}\n\nconst sheet1Xml = generateSheetXml(freshersList);\nconst sheet2Xml = generateSheetXml(othersList);\n\n// Build raw ZIP structure for valid XLSX (OpenXML format)\nfunction crc32(buf) {\n  let table = new Int32Array(256);\n  for (let i = 0; i < 256; i++) {\n    let c = i;\n    for (let k = 0; k < 8; k++) c = ((c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1));\n    table[i] = c;\n  }\n  let crc = 0 ^ (-1);\n  for (let i = 0; i < buf.length; i++) crc = (crc >>> 8) ^ table[(crc ^ buf[i]) & 0xFF];\n  return (crc ^ (-1)) >>> 0;\n}\n\nconst files = [\n  {\n    name: '[Content_Types].xml',\n    data: Buffer.from('<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/><Override PartName=\"/xl/worksheets/sheet2.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/></Types>', 'utf-8')\n  },\n  {\n    name: '_rels/.rels',\n    data: Buffer.from('<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>', 'utf-8')\n  },\n  {\n    name: 'xl/_rels/workbook.xml.rels',\n    data: Buffer.from('<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet2.xml\"/></Relationships>', 'utf-8')\n  },\n  {\n    name: 'xl/workbook.xml',\n    data: Buffer.from('<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"Freshers\" sheetId=\"1\" r:id=\"rId1\"/><sheet name=\"Others\" sheetId=\"2\" r:id=\"rId2\"/></sheets></workbook>', 'utf-8')\n  },\n  {\n    name: 'xl/worksheets/sheet1.xml',\n    data: Buffer.from(sheet1Xml, 'utf-8')\n  },\n  {\n    name: 'xl/worksheets/sheet2.xml',\n    data: Buffer.from(sheet2Xml, 'utf-8')\n  }\n];\n\nconst localHeaders = [];\nconst centralRecords = [];\nlet offset = 0;\n\nfor (const file of files) {\n  const nameBuf = Buffer.from(file.name, 'utf-8');\n  const fileCrc = crc32(file.data);\n  const size = file.data.length;\n\n  const lh = Buffer.alloc(30);\n  lh.writeUInt32LE(0x04034b50, 0);\n  lh.writeUInt16LE(20, 4);\n  lh.writeUInt16LE(0, 6);\n  lh.writeUInt16LE(0, 8);\n  lh.writeUInt16LE(0, 10);\n  lh.writeUInt16LE(0, 12);\n  lh.writeUInt32LE(fileCrc, 14);\n  lh.writeUInt32LE(size, 18);\n  lh.writeUInt32LE(size, 22);\n  lh.writeUInt16LE(nameBuf.length, 26);\n  lh.writeUInt16LE(0, 28);\n\n  const localEntry = Buffer.concat([lh, nameBuf, file.data]);\n  localHeaders.push(localEntry);\n\n  const cd = Buffer.alloc(46);\n  cd.writeUInt32LE(0x02014b50, 0);\n  cd.writeUInt16LE(20, 4);\n  cd.writeUInt16LE(20, 6);\n  cd.writeUInt16LE(0, 8);\n  cd.writeUInt16LE(0, 10);\n  cd.writeUInt16LE(0, 12);\n  cd.writeUInt16LE(0, 14);\n  cd.writeUInt32LE(fileCrc, 16);\n  cd.writeUInt32LE(size, 20);\n  cd.writeUInt32LE(size, 24);\n  cd.writeUInt16LE(nameBuf.length, 28);\n  cd.writeUInt16LE(0, 30);\n  cd.writeUInt16LE(0, 32);\n  cd.writeUInt16LE(0, 34);\n  cd.writeUInt16LE(0, 36);\n  cd.writeUInt32LE(0, 38);\n  cd.writeUInt32LE(offset, 42);\n\n  centralRecords.push(Buffer.concat([cd, nameBuf]));\n  offset += localEntry.length;\n}\n\nconst centralDir = Buffer.concat(centralRecords);\nconst cdSize = centralDir.length;\n\nconst eocd = Buffer.alloc(22);\neocd.writeUInt32LE(0x06054b50, 0);\neocd.writeUInt16LE(0, 4);\neocd.writeUInt16LE(0, 6);\neocd.writeUInt16LE(files.length, 8);\neocd.writeUInt16LE(files.length, 10);\neocd.writeUInt32LE(cdSize, 12);\neocd.writeUInt32LE(offset, 16);\neocd.writeUInt16LE(0, 20);\n\nconst excelZipBuffer = Buffer.concat([...localHeaders, centralDir, eocd]);\n\nconst binaryData = await this.helpers.prepareBinaryData(\n  excelZipBuffer,\n  'whatsapp_jobs_categorized.xlsx',\n  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'\n);\n\nreturn [{\n  json: {\n    freshers_count: freshers.length,\n    others_count: others.length\n  },\n  binary: {\n    data: binaryData\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        440
+      ],
+      "id": "generate-dual-sheet-excel",
+      "name": "Build Dual-Sheet Excel (.xlsx)"
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "automaticallyFromInputNode",
+        "dataPropertyName": "data",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "attachment; filename=\"whatsapp_jobs_categorized.xlsx\""
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        980,
+        440
+      ],
+      "id": "download-excel-response",
+      "name": "Download Excel File"
+    }
+  ],
+  "connections": {
+    "Webhook (GET - Form Page)": {
+      "main": [
+        [
+          {
+            "node": "Render Upload Form",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook (POST - File Receiver)": {
+      "main": [
+        [
+          {
+            "node": "Parse & Extract Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Extract Fields": {
+      "main": [
+        [
+          {
+            "node": "Build Dual-Sheet Excel (.xlsx)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Dual-Sheet Excel (.xlsx)": {
+      "main": [
+        [
+          {
+            "node": "Download Excel File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
